@@ -4,7 +4,8 @@
 
 class GenreBG {
 public:
-    GenreBG(const std::string& text_name, std::optional<ray::Color> color, TextureIndex texture_index, float distance);
+    GenreBG(const std::string& text_name, std::optional<ray::Color> color,
+            TextureIndex texture_index, float distance, float left_distance = 0.0f);
     ~GenreBG() {
         if (shader_loaded) ray::UnloadShader(shader);
     }
@@ -15,6 +16,9 @@ public:
     void fade_in();
     bool is_finished();
     bool is_complete();
+    float expansion_progress() const;
+    float expansion_left() const { return left_distance; }
+    float expansion_right() const { return right_distance; }
 
     int texture_frame() const { return (int)texture_index; }
     OutlinedText* name_text() const { return name.get(); }
@@ -34,4 +38,6 @@ private:
     bool shader_loaded = false;
     std::unique_ptr<OutlinedText> name;
     TextureIndex texture_index;
+    float left_distance = 0.0f;
+    float right_distance = 0.0f;
 };

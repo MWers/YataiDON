@@ -53,6 +53,7 @@ private:
     std::optional<GenreBG> genre_bg;
     int        genre_bg_start;
     int        genre_bg_end;
+    std::optional<float> genre_bg_start_pos;
     std::optional<float> genre_bg_end_pos;
     GenreIndex bg_genre_index;
     GenreIndex last_bg_genre_index;
@@ -88,6 +89,8 @@ private:
 
     std::optional<fs::path>  reopen_folder_path;
     std::optional<fs::path>  reopen_song_path;
+    int reopen_songs_before = 0;
+    int reopen_songs_after = 0;
     std::optional<fs::path>  restore_cursor_path;
 
     std::optional<fs::path>  recent_folder_path;

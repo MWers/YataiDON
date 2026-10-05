@@ -1,6 +1,8 @@
 #include "genre_bg.h"
+#include <algorithm>
 
-GenreBG::GenreBG(const std::string& text_name, std::optional<ray::Color> color, TextureIndex texture_index, float distance)
+GenreBG::GenreBG(const std::string& text_name, std::optional<ray::Color> color,
+                 TextureIndex texture_index, float right_distance, float left_distance)
 : texture_index(texture_index) {
     float base_font_size = (float)tex.skin_config[SC::SONG_BOX_NAME].font_size;
     float font_size = base_font_size;
@@ -22,9 +24,15 @@ GenreBG::GenreBG(const std::string& text_name, std::optional<ray::Color> color, 
         shader_loaded = ray::IsShaderValid(shader);
     }
 
+    this->left_distance = std::max(0.0f, left_distance);
+    this->right_distance = std::max(0.0f, right_distance);
     stretch = std::make_unique<MoveAnimation>(333, 20 * tex.screen_scale, false, false, 0, 0, 0, std::nullopt, EaseType::Cubic);
     scale = std::make_unique<TextureResizeAnimation>(100, 0.9f, false, false, 1.0);
-    move = std::make_unique<MoveAnimation>(600, std::min((float)tex.screen_width, distance) * tex.screen_scale, false, false, 0, stretch->duration*1.5);
+    const float left = std::min((float)tex.screen_width, this->left_distance);
+    const float right = std::min((float)tex.screen_width, this->right_distance);
+    move = std::make_unique<MoveAnimation>(
+        600, (int)((left + right) * tex.screen_scale), false, false,
+        0, stretch->duration * 1.5);
     fade = std::make_unique<FadeAnimation>(100, 0.0, false, false, 1.0);
     stretch->start();
     scale->start();
@@ -74,6 +82,14 @@ bool GenreBG::is_complete() {
     return true;
 }
 
+float GenreBG::expansion_progress() const {
+    const float total = (std::min((float)tex.screen_width, left_distance) +
+                         std::min((float)tex.screen_width, right_distance)) *
+                        tex.screen_scale;
+    if (total <= 0.0f) return 1.0f;
+    return std::clamp((float)move->attribute / total, 0.0f, 1.0f);
+}
+
 void GenreBG::update(double current_ms, FolderBox* box) {
     stretch->update(current_ms);
     scale->update(current_ms);
@@ -89,4 +105,3 @@ void GenreBG::update(double current_ms, FolderBox* box) {
         box->update(current_ms);
     }
 }
-

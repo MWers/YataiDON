@@ -302,6 +302,9 @@ void register_song_select_lua_bindings(sol::state& lua) {
         "fade",          sol::property([](GenreBG& self) { return self.fade.get(); }),
         "move_left",     sol::property([](GenreBG& self) { return self.move_left.get(); }),
         "move_right",    sol::property([](GenreBG& self) { return self.move_right.get(); }),
+        "expansion_progress", &GenreBG::expansion_progress,
+        "left_distance", sol::property(&GenreBG::expansion_left),
+        "right_distance", sol::property(&GenreBG::expansion_right),
         "is_finished",   &GenreBG::is_finished,
         "is_complete",   &GenreBG::is_complete
     );

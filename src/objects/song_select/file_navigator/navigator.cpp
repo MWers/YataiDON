@@ -166,6 +166,7 @@ void Navigator::load_all_roots() {
     pending_inline_path.reset();
     pending_inline_folder = nullptr;
     genre_bg.reset();
+    genre_bg_start_pos.reset();
     genre_bg_end_pos.reset();
     inline_streaming = false;
     items.clear();
@@ -295,6 +296,8 @@ void Navigator::init(std::vector<fs::path> songs_paths) {
         diff_sort_filter.reset();
         reopen_folder_path.reset();
         reopen_song_path.reset();
+        reopen_songs_before = 0;
+        reopen_songs_after = 0;
         items.clear();
         open_index = 0;
         is_init = false;
@@ -316,19 +319,35 @@ void Navigator::init(std::vector<fs::path> songs_paths) {
             pending_inline_path.reset();
             pending_inline_folder = nullptr;
             genre_bg.reset();
+            genre_bg_start_pos.reset();
             awaiting_diff_sort = false;
             diff_sort_filter.reset();
             load_all_roots();
         } else {
             if (inline_state.has_value()) {
                 if (open_index >= 0 && open_index < (int)items.size()) {
-                    if (dynamic_cast<SongBox*>(items[open_index].get()))
+                    if (dynamic_cast<SongBox*>(items[open_index].get())) {
                         reopen_song_path = items[open_index]->path;
+                        reopen_songs_before = 0;
+                        reopen_songs_after = 0;
+                        const int first = inline_state->first_song_index;
+                        const int end = std::min(first + inline_state->songs_count,
+                                                 (int)items.size());
+                        for (int i = first; i < end; i++) {
+                            if (!dynamic_cast<SongBox*>(items[i].get())) continue;
+                            if (i < open_index) ++reopen_songs_before;
+                            else if (i > open_index) ++reopen_songs_after;
+                        }
+                    }
                 }
                 reopen_folder_path = inline_state->saved_folder_box
                                    ? std::optional<fs::path>(inline_state->saved_folder_box->path)
                                    : std::nullopt;
-                if (!reopen_folder_path) reopen_song_path.reset();
+                if (!reopen_folder_path) {
+                    reopen_song_path.reset();
+                    reopen_songs_before = 0;
+                    reopen_songs_after = 0;
+                }
                 collapse_inline_now();
             }
             for (auto& item : items) {
@@ -1429,11 +1448,18 @@ void Navigator::begin_inline_load() {
     float side_offset_r = 300 * tex.screen_scale;
     float center_offset = 150 * tex.screen_scale;
 
-    float temp_end_pos = (594 - center_offset) + (offset * base_spacing) + side_offset_r;
-    genre_bg_end_pos = (temp_end_pos > tex.screen_width) ? -100.0f : temp_end_pos;
+    const int songs_before = reopen_song_path ? reopen_songs_before : 0;
+    const int songs_after = reopen_song_path ? reopen_songs_after : approx_items;
+    const float left_distance = songs_before * base_spacing;
+    const float right_distance = songs_after * base_spacing;
+    const float left_distance_unscaled = songs_before * 100.0f;
+    const float right_distance_unscaled = songs_after * 100.0f;
+    genre_bg_start_pos = pending_inline_folder->left_bound - left_distance - 1;
+    genre_bg_end_pos = pending_inline_folder->right_bound + right_distance + 1;
 
     genre_bg.emplace(items[open_index]->text_name, items[open_index]->back_color,
-                     items[open_index]->texture_index, approx_items * 100);
+                     items[open_index]->texture_index,
+    right_distance_unscaled, left_distance_unscaled);
     is_processing = true;
     // The boxes below the opened folder slide out of the way for the inline list: by the room its
     // songs will take (where set_positions puts them once they are in), not always off screen --
@@ -1443,13 +1469,19 @@ void Navigator::begin_inline_load() {
     // not widen, so they stay put and set_positions moves them once the songs are in -- sending
     // them off screen left the right side empty for the whole wait.
     if (approx_items > 0) {
-        const float off_screen = tex.screen_width + 150.0f;
         const float edge_delay = (float)(genre_bg->stretch->duration * 1.5);
         const float edge_duration = (float)genre_bg->move->duration;
+        const float left_shift = std::min(left_distance, 18 * base_spacing) + 1;
+        const float right_shift = std::min(right_distance, 18 * base_spacing) + 1;
         for (int i = 0; i < (int)items.size(); i++) {
-            if (items[i]->position > items[open_index]->position) // "18" is a '''magic''' number that should fits for almost everything
-              items[i]->move_box(std::min(items[i]->position + approx_items * base_spacing, items[i]->position + 18 * base_spacing),
+            if (items[i]->position < items[open_index]->position && left_shift > 0) {
+                items[i]->move_box(items[i]->position - left_shift,
                                    edge_duration, edge_delay, std::nullopt);
+            } else if (items[i]->position > items[open_index]->position &&
+                       right_shift > 0) {
+                items[i]->move_box(items[i]->position + right_shift,
+                                   edge_duration, edge_delay, std::nullopt);
+            }
         }
     }
 }
@@ -2241,7 +2273,7 @@ void Navigator::draw() {
 
         if ((!items.empty() && (is_processing || !items[open_index]->fade->is_finished)) &&
             pending_inline_folder != nullptr && genre_bg_end_pos.has_value()) {
-            start_pos = pending_inline_folder->left_bound;
+            start_pos = genre_bg_start_pos.value_or(pending_inline_folder->left_bound);
             end_pos = genre_bg_end_pos.value();  // approximation while loading
         } else if (genre_bg_start < (int)items.size() && genre_bg_end < (int)items.size()) {
             start_pos = items[genre_bg_start]->left_bound;
