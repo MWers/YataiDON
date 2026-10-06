@@ -20,7 +20,6 @@ void DanGameScreen::on_screen_start() {
 
     JudgePos::X = tex.skin_config[SC::JUDGE_POS].x;
     JudgePos::Y = tex.skin_config[SC::JUDGE_POS].y;
-    TJAParser::jpos_field_width = (tex.screen_width - JudgePos::X) / tex.screen_scale;
 
     auto rainbow_mask = std::dynamic_pointer_cast<SingleTexture>(tex.textures["balloon/rainbow_mask"]);
     auto rainbow      = std::dynamic_pointer_cast<SingleTexture>(tex.textures["balloon/rainbow"]);

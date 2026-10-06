@@ -59,7 +59,6 @@ public:
     void start_song(double ms_from_start);
 
     void poll_pending_song();
-    void set_players_audio_end();
 
     void restart_song();
 

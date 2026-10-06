@@ -202,6 +202,8 @@ void Player::handle_timeline(double ms_from_start) {
         // dispatching as soon as the entry has been consumed.
         TimelineObject entry = timeline_buffer[i];
         const size_t before = timeline_buffer.size();
+        handle_scroll_type_commands(ms_from_start, entry, i);
+        if (timeline_buffer.size() != before) continue;
         handle_bpmchange(ms_from_start, entry, i);
         if (timeline_buffer.size() != before) continue;
         handle_judgeposition(ms_from_start, entry, i);
@@ -427,6 +429,16 @@ void Player::update(double ms_from_start, double current_ms, std::optional<Backg
         }
     }
     handle_timeline(ms_from_start);
+    if (delay_start.has_value() && delay_end.has_value()) {
+        if (ms_from_start >= delay_end.value()) {
+            double delay = delay_end.value() - delay_start.value();
+            for (auto& note : draw_note_buffer) note.load_ms += delay;
+            for (auto& note : draw_note_list) note.load_ms += delay;
+            for (auto& note : barlines) note.load_ms += delay;
+            delay_start.reset();
+            delay_end.reset();
+        }
+    }
 
     for (auto it = draw_arc_list.begin(); it != draw_arc_list.end(); ) {
         it->update(current_ms);
@@ -613,10 +625,10 @@ void Player::draw_practice(double ms_from_start, float x, float y, ray::Shader& 
 void Player::get_load_time(Note& note) {
     int note_half_w = t_notes_9->width / 2;
     float travel_distance = tex.screen_width - JudgePos::X;
-    // The faster axis decides when a note comes on screen: a polar #SCROLL pointing straight up
-    // leaves a horizontal component of ~1e-17, not 0
-    bool horizontal = abs(note.scroll_x) >= abs(note.scroll_y);
-    float base_pixels_per_ms = (note.bpm / 240000 * (horizontal ? abs(note.scroll_x) : abs(note.scroll_y)) * travel_distance);
+    float base_pixels_per_ms = (note.bpm / 240000 * abs(note.scroll_x) * travel_distance);
+    if (base_pixels_per_ms == 0) {
+        base_pixels_per_ms = (note.bpm / 240000 * abs(note.scroll_y) * travel_distance);
+    }
     if (base_pixels_per_ms == 0) {
         note.load_ms = note.hit_ms;
         note.unload_ms = note.hit_ms;
@@ -627,19 +639,6 @@ void Player::get_load_time(Note& note) {
     if (!note.sudden_appear_ms.has_value() ||
         !note.sudden_moving_ms.has_value() ||
         note.sudden_appear_ms.value() == std::numeric_limits<float>::infinity()) {
-        if (scroll_type != ScrollType::NMSCROLL) {
-            // On screen while (note beat - current beat) * px_per_beat is between the left edge
-            // and the right edge
-            double px_per_beat = (horizontal ? note.scroll_x : abs(note.scroll_y)) * travel_distance / 4;
-            double left = horizontal ? -(JudgePos::X + note_half_w) : -(travel_distance + note_half_w);
-            double right = travel_distance + note_half_w;
-            double beat = tempo_map.beat_at(note.hit_ms);
-            double lo = beat - right / px_per_beat, hi = beat - left / px_per_beat;
-            auto [first, last] = tempo_map.ms_within(std::min(lo, hi), std::max(lo, hi));
-            note.load_ms = std::min(first, note.hit_ms);
-            note.unload_ms = std::max(last, note.hit_ms);
-            return;
-        }
         note.load_ms = note.hit_ms - normal_travel_ms;
         note.unload_ms = note.hit_ms + normal_travel_ms;
         return;
@@ -652,18 +651,6 @@ void Player::get_load_time(Note& note) {
     float sudden_pixels_per_ms = travel_distance / movement_duration;
     float unload_offset = travel_distance / sudden_pixels_per_ms;
     note.unload_ms = note.hit_ms + unload_offset;
-}
-
-// #BMSCROLL / #HBSCROLL charts can hold notes behind a #DELAY that outlasts the song (a wall of
-// notes frozen on screen). They are drawn but never judged, counted or waited for.
-bool Player::unplayable(const Note& note) const {
-    return scroll_type != ScrollType::NMSCROLL && audio_end_ms.has_value()
-        && note.type != NoteType::BARLINE && note.hit_ms > audio_end_ms.value();
-}
-
-void Player::set_audio_end(double chart_ms) {
-    audio_end_ms = chart_ms;
-    if (scroll_type != ScrollType::NMSCROLL && end_time > chart_ms) reset_chart();
 }
 
 void Player::reset_chart() {
@@ -682,8 +669,7 @@ void Player::reset_chart() {
     Note* last_note = nullptr;
     end_time = 0;
     bpm = parser->metadata.bpm;
-    scroll_type = notes.scroll_type;
-    tempo_map = notes.tempo_map;
+    scroll_multiplier = 1.0f;
 
     for (Note& note: notes.notes) {
         get_load_time(note);
@@ -696,22 +682,19 @@ void Player::reset_chart() {
                 it->unload_ms = note.unload_ms;
             }
         }
-        bool playable = !unplayable(note);
-        if (playable) {
-            if (note.type == NoteType::DON || note.type == NoteType::DON_L) {
-                don_notes.push_back(note);
-            } else if (note.type == NoteType::KAT || note.type == NoteType::KAT_L) {
-                kat_notes.push_back(note);
-            } else if (note.type != NoteType::BARLINE) {
-                other_notes.push_back(note);
-            }
+        if (note.type == NoteType::DON || note.type == NoteType::DON_L) {
+            don_notes.push_back(note);
+        } else if (note.type == NoteType::KAT || note.type == NoteType::KAT_L) {
+            kat_notes.push_back(note);
+        } else if (note.type != NoteType::BARLINE) {
+            other_notes.push_back(note);
         }
         draw_note_list.push_back(note);
         if (note.type != NoteType::BARLINE) {
             last_note = &note;
         }
 
-        if (playable && note.hit_ms > end_time) {
+        if (note.hit_ms > end_time) {
             end_time = note.hit_ms;
         }
     }
@@ -734,7 +717,6 @@ void Player::reset_chart() {
         if (!branch.empty()) {
             for (NoteList& section : branch) {
                 apply_modifiers(section, modifiers);
-                std::erase_if(section.notes, [&](const Note& n) { return unplayable(n); });
                 Note* last_note = nullptr;
                 for (Note& note: section.notes) {
                     get_load_time(note);
@@ -787,8 +769,7 @@ void Player::reset_chart() {
 
     NoteList total_notes; //all notes including master branch
 
-    std::copy_if(notes.notes.begin(), notes.notes.end(), std::back_inserter(total_notes.notes),
-                 [&](const Note& n) { return !unplayable(n); });
+    total_notes.notes.insert(total_notes.notes.end(), notes.notes.begin(), notes.notes.end());
     for (NoteList section : branch_m) {
         total_notes.notes.insert(total_notes.notes.end(), section.notes.begin(), section.notes.end());
     }
@@ -847,24 +828,45 @@ std::optional<Note> Player::get_first_note() {
     return draw_note_list.front();
 }
 
-// #BMSCROLL / #HBSCROLL: distance = beats to the note, so the field speeds up and slows down
-// with the tempo and stops during a #DELAY. Otherwise: time to the note at the note's own BPM.
 float Player::get_position_x(const Note& note, double current_ms) {
-    if (scroll_type != ScrollType::NMSCROLL) {
-        double beats = tempo_map.beat_at(note.hit_ms) - tempo_map.beat_at(current_ms);
-        return JudgePos::X + beats / 4 * note.scroll_x * (tex.screen_width - JudgePos::X);
+    if (delay_start.has_value()) {
+        current_ms = delay_start.value();
     }
-    float speedx = note.bpm / 240000 * note.scroll_x * (tex.screen_width - JudgePos::X);
+    float speedx = note.bpm * scroll_multiplier / 240000 * note.scroll_x * (tex.screen_width - JudgePos::X);
     return JudgePos::X + (note.hit_ms - current_ms) * speedx;
 }
 
 float Player::get_position_y(const Note& note, double current_ms) {
-    if (scroll_type != ScrollType::NMSCROLL) {
-        double beats = tempo_map.beat_at(note.hit_ms) - tempo_map.beat_at(current_ms);
-        return beats / 4 * note.scroll_y * (tex.screen_width - JudgePos::X);
+    if (delay_start.has_value()) {
+        current_ms = delay_start.value();
     }
-    float speedy = note.bpm / 240000 * note.scroll_y * ((tex.screen_width - JudgePos::X)/tex.screen_width) * tex.screen_width;
+    float speedy = note.bpm * scroll_multiplier / 240000 * note.scroll_y * ((tex.screen_width - JudgePos::X)/tex.screen_width) * tex.screen_width;
     return (note.hit_ms - current_ms) * speedy;
+}
+
+void Player::handle_scroll_type_commands(double ms_from_start, const TimelineObject& timeline_object, int buffer_index) {
+    if (timeline_object.start_time > ms_from_start) return;
+    if (timeline_object.bpmchange.has_value()) {
+        scroll_multiplier *= timeline_object.bpmchange.value();
+        bpm *= timeline_object.bpmchange.value();
+        if (buffer_index != (int)timeline_buffer.size() - 1)
+            timeline_buffer[buffer_index] = std::move(timeline_buffer.back());
+        timeline_buffer.pop_back();
+        return;
+    }
+
+    if (timeline_object.delay.has_value()) {
+        if (!delay_start.has_value()) {
+            delay_start = timeline_object.start_time;
+            delay_end = timeline_object.start_time + timeline_object.delay.value();
+        } else {
+            spdlog::error("Needs fix: delay is currently active, but another delay is being activated");
+        }
+        if (buffer_index != (int)timeline_buffer.size() - 1)
+            timeline_buffer[buffer_index] = std::move(timeline_buffer.back());
+        timeline_buffer.pop_back();
+        return;
+    }
 }
 
 void Player::handle_gogotime(double ms_from_start, const TimelineObject& timeline_object, int buffer_index) {
@@ -920,9 +922,7 @@ void Player::handle_bpmchange(double ms_from_start, const TimelineObject& timeli
     if (timeline_object.start_time > ms_from_start) return;
     if (!timeline_object.bpm.has_value()) return;
 
-    // Negative in #HBSCROLL / #BMSCROLL charts that run the field backwards; animations and
-    // autoplay only want the tempo
-    bpm = std::abs(timeline_object.bpm.value());
+    bpm = timeline_object.bpm.value();
     chara->set_bpm(bpm);
 
     if (buffer_index != (int)timeline_buffer.size() - 1)
@@ -1868,6 +1868,8 @@ void Player::seek_to(double resume_time) {
         timeline_buffer.push_back(entry);
         int idx = (int)timeline_buffer.size() - 1;
         const size_t before = timeline_buffer.size();
+        handle_scroll_type_commands(resume_time, entry, idx);
+        if (timeline_buffer.size() != before) continue;
         handle_bpmchange(resume_time, entry, idx);
         if (timeline_buffer.size() != before) continue;
         handle_judgeposition(resume_time, entry, idx);

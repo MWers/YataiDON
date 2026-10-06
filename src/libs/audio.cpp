@@ -1284,16 +1284,6 @@ float AudioEngine::get_sound_time_played(const std::string& name) const {
     return 0.0f;
 }
 
-float AudioEngine::get_sound_time_length(const std::string& name) const {
-    std::shared_lock<std::shared_mutex> guard(rw_lock);
-    auto it = sounds.find(name);
-    if (it != sounds.end()) {
-        return static_cast<float>(it->second.frame_count) / static_cast<float>(target_sample_rate);
-    }
-    spdlog::warn("Sound {} not found", name);
-    return 0.0f;
-}
-
 void AudioEngine::seek_sound(const std::string& name, float position) {
     std::shared_lock<std::shared_mutex> guard(rw_lock);
     auto it = sounds.find(name);

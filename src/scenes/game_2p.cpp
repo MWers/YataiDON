@@ -40,7 +40,6 @@ void Game2PScreen::init_tja(fs::path song) {
 
     players[0]->kusudama_partner = players[1].get();
     players[1]->kusudama_partner = players[0].get();
-    set_players_audio_end();
 
     start_ms = get_current_ms() - parser->metadata.offset * 1000 - (double)global_data.config->general.audio_offset;
 }

@@ -116,7 +116,6 @@ public:
     void spawn_ending_anim(Background* background = nullptr);
 
     void seek_to(double resume_time);
-    void set_audio_end(double chart_ms);
 
     void update(double ms_from_start, double current_ms, std::optional<Background>& background);
 
@@ -165,6 +164,7 @@ private:
     float judge_x;
     float judge_y;
 
+    float scroll_multiplier;
     bool is_gogo_time;
     bool was_gauge_full = false;
     Side autoplay_hit_side;
@@ -252,9 +252,8 @@ private:
     std::vector<ScoreCounterAnimation> base_score_list;
     std::optional<GogoTime> gogo_time;
     std::optional<Fireworks> fireworks;
-    ScrollType scroll_type = ScrollType::NMSCROLL;
-    TempoMap tempo_map;
-    std::optional<double> audio_end_ms;
+    std::optional<double> delay_start;
+    std::optional<double> delay_end;
     std::optional<ComboAnnounce> combo_announce;
     std::optional<BranchIndicator> branch_indicator;
     std::optional<std::variant<FailAnimation, ClearAnimation, FCAnimation>> ending_anim;
@@ -262,7 +261,6 @@ private:
     void get_load_time(Note& note);
 
     void reset_chart();
-    bool unplayable(const Note& note) const;
 
     void handle_timeline(double ms_from_start);
 
@@ -276,6 +274,7 @@ private:
 
     float get_position_y(const Note& note, double current_ms);
 
+    void handle_scroll_type_commands(double ms_from_start, const TimelineObject& timeline_object, int buffer_index);
     void handle_gogotime(double ms_from_start, const TimelineObject& timeline_object, int buffer_index);
     void handle_judgeposition(double ms_from_start, const TimelineObject& timeline_object, int buffer_index);
     void handle_bpmchange(double ms_from_start, const TimelineObject& timeline_object, int buffer_index);

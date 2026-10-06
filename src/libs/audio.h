@@ -143,7 +143,6 @@ public:
     void  set_sound_pan(const std::string& name,   float pan);
     void  set_sound_pitch(const std::string& name, float pitch);
     float get_sound_time_played(const std::string& name) const;
-    float get_sound_time_length(const std::string& name) const;
     void  seek_sound(const std::string& name, float position);
 
     struct PreparedPCM {

@@ -7,7 +7,6 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
-#include <numbers>
 #include <numeric>
 #include <random>
 #include <sstream>
@@ -441,10 +440,10 @@ TJAParser::notes_to_position(int diff) {
 
     ParserState state;
     state.bpm = metadata.bpm;
+    state.bpmchange_last_bpm = metadata.bpm;
     state.balloons = metadata.course_data[diff].balloon;
     state.curr_note_list = &master_notes.notes;
     state.curr_timeline = &master_notes.timeline;
-    master_notes.tempo_map.points = {{current_ms, 0.0, metadata.bpm}};
 
     // Process each bar
     for (const auto& bar : notes) {
@@ -499,6 +498,7 @@ TJAParser::notes_to_position(int diff) {
             for (char item : part) {
                 // Skip empty notes (0) and non-digits
                 if (item == '0' || !std::isdigit(static_cast<unsigned char>(item))) {
+                    state.delay_last_note_ms = current_ms;
                     current_ms += increment;
                     continue;
                 }
@@ -507,9 +507,19 @@ TJAParser::notes_to_position(int diff) {
                 if (item == '9' && !state.curr_note_list->empty()) {
                     Note* last_note = &state.curr_note_list->back();
                     if (last_note && last_note->type == NoteType::KUSUDAMA) {
+                        state.delay_last_note_ms = current_ms;
                         current_ms += increment;
                         continue;
                     }
+                }
+
+                // Apply delay if present
+                if (state.delay_current != 0.0f) {
+                    TimelineObject delay_timeline;
+                    delay_timeline.start_time = state.delay_last_note_ms;
+                    delay_timeline.delay = state.delay_current;
+                    state.curr_timeline->push_back(delay_timeline);
+                    state.delay_current = 0.0f;
                 }
 
                 // Create and add note
@@ -520,7 +530,6 @@ TJAParser::notes_to_position(int diff) {
             }
         }
     }
-    master_notes.scroll_type = state.scroll_type;
     return {master_notes, branch_m, branch_e, branch_n};
 }
 
@@ -647,18 +656,16 @@ std::vector<std::vector<std::string>> TJAParser::data_to_notes(int diff) {
                     note_end = i;
                     break;
                 }
-                // Like Taiko-san Jiro, the scroll mode only counts before #START
-                bool started = note_start != -1 || p1_start != -1 || p2_start != -1;
                 if (line.find("#NMSCROLL") != std::string::npos) {
-                    if (!started) scroll_type = ScrollType::NMSCROLL;
+                    scroll_type = ScrollType::NMSCROLL;
                     continue;
                 }
                 else if (line.find("#BMSCROLL") != std::string::npos) {
-                    if (!started) scroll_type = ScrollType::BMSCROLL;
+                    scroll_type = ScrollType::BMSCROLL;
                     continue;
                 }
                 else if (line.find("#HBSCROLL") != std::string::npos) {
-                    if (!started) scroll_type = ScrollType::HBSCROLL;
+                    scroll_type = ScrollType::HBSCROLL;
                     continue;
                 }
             }
@@ -710,8 +717,6 @@ std::vector<std::vector<std::string>> TJAParser::data_to_notes(int diff) {
             const std::string& line = data[i];
 
             if (line[0] == '#') {
-                if (line.starts_with("#NMSCROLL") || line.starts_with("#BMSCROLL") || line.starts_with("#HBSCROLL"))
-                    continue;
                 bar.push_back(line);
             }
             else if (line == ",") {
@@ -782,11 +787,7 @@ void TJAParser::handle_MEASURE(const std::string& value, ParserState& state) {
         try {
             double num = std::stof(value.substr(0, slash_pos));
             double den = std::stof(value.substr(slash_pos + 1));
-            // #BMSCROLL / #HBSCROLL charts pair a negative measure with a negative BPM (time
-            // still moves forward while the beat count runs back), or use a zero-length measure
-            // and space its notes with #DELAY
-            bool beat_scroll = state.scroll_type != ScrollType::NMSCROLL;
-            if (den != 0.0f && (num > 0.0f || beat_scroll)) {
+            if (num > 0.0f && den != 0.0f) {
                 state.time_signature = num / den;
             } else {
                 spdlog::warn("Ignoring degenerate #MEASURE {} in {}", value, file_path.string());
@@ -813,27 +814,6 @@ void TJAParser::handle_SCROLL(const std::string& value, ParserState& state) {
 
     if (value.empty()) {
         spdlog::warn("Empty #SCROLL value in {}", file_path.string());
-        return;
-    }
-
-    // Polar form (TaikoManyGimmicks): #SCROLL <speed>, <rotation-lower>, <rotation-upper>, the
-    // speed rotated rotation-upper/rotation-lower turns counterclockwise
-    if (value.find(',') != std::string::npos && value.find('i') == std::string::npos) {
-        std::vector<double> parts;
-        std::stringstream ss(value);
-        std::string part;
-        try {
-            while (std::getline(ss, part, ',')) parts.push_back(std::stod(trim(part)));
-        } catch (const std::exception&) {
-            parts.clear();
-        }
-        if (parts.size() != 3 || parts[1] == 0.0) {
-            spdlog::warn("Invalid polar #SCROLL value '{}' in {}", value, file_path.string());
-            return;
-        }
-        double angle = 2.0 * std::numbers::pi * parts[2] / parts[1];
-        state.scroll_x_modifier = parts[0] * std::cos(angle);
-        state.scroll_y_modifier = parts[0] * std::sin(angle);
         return;
     }
 
@@ -891,24 +871,23 @@ void TJAParser::handle_BPMCHANGE(const std::string& value, ParserState& state) {
         return;
     }
 
-    TimelineObject timeline_obj;
-    timeline_obj.start_time = this->current_ms;
-    timeline_obj.bpm = parsed_bpm;
-    state.bpm = parsed_bpm;
-    state.curr_timeline->push_back(timeline_obj);
-    add_tempo_point(parsed_bpm);
-}
+    if (state.scroll_type == ScrollType::BMSCROLL ||
+        state.scroll_type == ScrollType::HBSCROLL) {
+        // Do not modify bpm, it needs to be changed live by bpmchange
+        double bpmchange = parsed_bpm / state.bpmchange_last_bpm;
+        state.bpmchange_last_bpm = parsed_bpm;
 
-// Branches rewind current_ms; their repeated tempo changes land before the last point and are
-// skipped, so the beat map follows the first branch.
-void TJAParser::add_tempo_point(double bpm) {
-    auto& points = master_notes.tempo_map.points;
-    if (current_ms < points.back().ms) return;
-    if (current_ms == points.back().ms) {
-        points.back().bpm = bpm;
-        return;
+        TimelineObject bpmchange_timeline;
+        bpmchange_timeline.start_time = this->current_ms;
+        bpmchange_timeline.bpmchange = bpmchange;
+        state.curr_timeline->push_back(bpmchange_timeline);
+    } else {
+        TimelineObject timeline_obj;
+        timeline_obj.start_time = this->current_ms;
+        timeline_obj.bpm = parsed_bpm;
+        state.bpm = parsed_bpm;
+        state.curr_timeline->push_back(timeline_obj);
     }
-    points.push_back({current_ms, master_notes.tempo_map.beat_at(current_ms), bpm});
 }
 
 void TJAParser::handle_GOGOSTART(const std::string& value, ParserState& state) {
@@ -937,11 +916,13 @@ void TJAParser::handle_DELAY(const std::string& value, ParserState& state) {
         spdlog::warn("Invalid #DELAY value '{}' in {}", value, file_path.string());
         return;
     }
-    if (delay_ms > 0) {
-        // The beat count stands still through a delay (seen with #BMSCROLL / #HBSCROLL)
-        add_tempo_point(0.0);
-        this->current_ms += delay_ms;
-        add_tempo_point(state.bpm);
+    if (state.scroll_type == ScrollType::BMSCROLL || state.scroll_type == ScrollType::HBSCROLL) {
+        if (delay_ms > 0) {
+            //Do not modify current_ms, it will be modified live
+            state.delay_current += delay_ms;
+
+            //Delays will be combined between notes, and attached to previous note
+        }
     } else {
         this->current_ms += delay_ms;
     }
@@ -1025,51 +1006,43 @@ void TJAParser::handle_JPOSSCROLL(const std::string& part, ParserState& state) {
         return;
     }
     std::string distance_str = parts[1];
-    replace_all(distance_str, ",", "");
 
-    // A component is pixels ("-94") or, as in TaikoManyGimmicks, a fraction of the default note
-    // field width ("3/5"); the distance is one component or a complex "x+yi" / "x-yi" / "yi"
-    auto component = [&](std::string c, double& out) -> bool {
-        if (c.empty() || c == "+" || c == "-") c += "1";
-        size_t slash = c.find('/');
-        try {
-            if (slash == std::string::npos) {
-                out = std::stod(c);
-            } else {
-                double den = std::stod(c.substr(slash + 1));
-                if (den == 0.0) return false;
-                out = std::stod(c.substr(0, slash)) / den * jpos_field_width;
-            }
-        } catch (const std::exception&) {
-            return false;
-        }
-        return true;
-    };
+    double delta_x = 0.0f;
+    double delta_y = 0.0f;
 
-    double delta_x = 0.0;
-    double delta_y = 0.0;
-    bool valid;
-    if (!distance_str.empty() && distance_str.back() == 'i') {
-        std::string body = distance_str.substr(0, distance_str.size() - 1);
-        size_t split = std::string::npos;
-        for (size_t k = body.size(); k-- > 1;) {
-            char prev = body[k - 1];
-            if ((body[k] == '+' || body[k] == '-') && prev != 'e' && prev != 'E' && prev != '/') {
-                split = k;
-                break;
+    if (distance_str.find('i') != std::string::npos) {
+        std::string normalized = distance_str;
+        replace_all(normalized, ".i", "j");
+        replace_all(normalized, "i", "j");
+        replace_all(normalized, ",", "");
+
+        std::smatch match;
+        if (std::regex_match(normalized, match, complex_number_regex)) {
+            try {
+                if (match[1].length() > 0 && match[1].str().back() != 'j') {
+                    delta_x = std::stof(match[1]);
+                }
+                if (match[2].length() > 0) {
+                    std::string imag_str = match[2];
+                    delta_y = std::stof(imag_str);
+                } else if (match[1].length() > 0 && normalized.back() == 'j') {
+                    delta_y = std::stof(match[1]);
+                    delta_x = 0.0f;
+                }
+            } catch (const std::exception&) {
+                spdlog::warn("Invalid #JPOSSCROLL distance '{}' in {}", distance_str, file_path.string());
+                return;
             }
-        }
-        if (split == std::string::npos) {
-            valid = component(body.empty() ? "1" : body, delta_y);
-        } else {
-            valid = component(body.substr(0, split), delta_x) && component(body.substr(split), delta_y);
         }
     } else {
-        valid = component(distance_str, delta_x);
-    }
-    if (!valid) {
-        spdlog::warn("Invalid #JPOSSCROLL distance '{}' in {}", distance_str, file_path.string());
-        return;
+        try {
+            double distance = std::stof(distance_str);
+            delta_x = distance;
+            delta_y = 0.0f;
+        } catch (const std::exception&) {
+            spdlog::warn("Invalid #JPOSSCROLL distance '{}' in {}", distance_str, file_path.string());
+            return;
+        }
     }
 
     if (direction == 0) {
@@ -1234,6 +1207,7 @@ Note TJAParser::add_bar(ParserState& state) {
 Note TJAParser::add_note(char item, ParserState& state) {
     Note note = Note();
     note.hit_ms = this->current_ms;
+    state.delay_last_note_ms = this->current_ms;
     note.display = true;
     note.type = NoteType(item - '0');
     note.index = state.index;
